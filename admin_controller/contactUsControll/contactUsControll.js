@@ -1,15 +1,17 @@
 const nodemailer = require('nodemailer');
 
-// Configure Nodemailer transporter for Gmail SMTP
+// Configure Nodemailer transporter for Zoho Mail SMTP
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.zoho.in',
+    port: 587,
+    secure: false, // Use TLS
     auth: {
         user: process.env.EMAIL_USERNAME, 
         pass: process.env.EMAIL_PASSWORD 
     }
 });
 
-// Contact Us controller to send form data to your Gmail
+// Contact Us controller to send form data to your Zoho Mail
 const contactUs = async (req, res) => {
     try {
         const { name, email, subject, message } = req.body;
@@ -19,11 +21,11 @@ const contactUs = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Please fill in all required fields' });
         }
 
-        // Email options to send form data to your Gmail
+       
         const mailOptions = {
-            from: `"${name}" <${email}>`, 
+            from: `"${name}" <${process.env.EMAIL_USERNAME}>`, 
             replyTo: email, 
-            to: process.env.GMAIL_RECEIVER, 
+            to: process.env.ZOHO_RECEIVER, 
             subject: `Contact Form: ${subject}`,
             text: `
                 From: ${name} (${email})
@@ -32,13 +34,13 @@ const contactUs = async (req, res) => {
             `,
             html: `
                 <h2>Contact Form Submission</h2>
-                <p><strong>From:</strong> ${name} &lt;${email}&gt;</p>
+                <p><strong>From:</strong> ${name} <${email}></p>
                 <p><strong>Subject:</strong> ${subject}</p>
                 <p><strong>Message:</strong> ${message}</p>
             `
         };
 
-        // Send email to your Gmail
+        // Send email to your Zoho Mail
         await transporter.sendMail(mailOptions);
 
         // Respond to frontend
