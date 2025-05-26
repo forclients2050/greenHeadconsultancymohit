@@ -1,6 +1,6 @@
-
+// serviceController.js
 const mongoose = require('mongoose');
-const Service = require('../../admin_mongodb/serviceManagementMongo/serviceManagementMongo'); 
+const Service = require('../../admin_mongodb/serviceManagementMongo/serviceManagementMongo');
 const cloudinary = require('cloudinary').v2;
 
 // Configure Cloudinary
@@ -9,6 +9,14 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// Helper function to extract public ID from Cloudinary URL
+const getPublicIdFromUrl = (url) => {
+  const parts = url.split('/');
+  const fileName = parts[parts.length - 1]; // Get the last segment
+  const publicId = fileName.split('.')[0]; // Remove extension
+  return `services/${publicId}`; // Prepend folder
+};
 
 // Helper function to process base64 images and upload to Cloudinary
 const processImagesInContent = async (content) => {
@@ -35,6 +43,8 @@ const processImagesInContent = async (content) => {
       transformation: { quality: 'auto', fetch_format: 'auto' },
     });
 
+   
+
     modifiedContent = modifiedContent.replace(
       `data:${mimeType};base64,${base64Data}`,
       result.secure_url
@@ -44,10 +54,65 @@ const processImagesInContent = async (content) => {
   return modifiedContent;
 };
 
+// Helper function to fetch and process services
+const fetchServices = async (filter, res) => {
+  try {
+    const services = await Service.find({ ...filter, isDeleted: false })
+      .select('_id title content category subcategory seoKeywords shortDescription')
+      .lean();
+
+    if (services.length === 0) {
+      return res.status(404).json({
+        message: 'No services found',
+        data: [],
+      });
+    }
+
+    const processedServices = await Promise.all(
+      services.map(async (service) => {
+        const urlRegex = /https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/[^/]+\/services\/[^/]+/g;
+        const imageUrls = service.content.match(urlRegex) || [];
+      
+
+        const imageDetails = await Promise.all(
+          imageUrls.map(async (url) => {
+            const publicId = getPublicIdFromUrl(url);
+          
+            try {
+              const result = await cloudinary.api.resource(publicId, {
+                resource_type: 'image',
+              });
+              return {
+                url: result.secure_url,
+                public_id: result.public_id,
+                format: result.format,
+                width: result.width,
+                height: result.height,
+              };
+            } catch (error) {
+              console.error(`Error fetching Cloudinary resource for ${publicId}:`, error.message);
+              return null; // Skip invalid images
+            }
+          })
+        );
+
+        const validImageDetails = imageDetails.filter((detail) => detail !== null);
+        return { ...service, images: validImageDetails };
+      })
+    );
+
+    res.status(200).json({
+      message: 'Services retrieved successfully',
+      data: processedServices,
+    });
+  } catch (error) {
+    console.error('Error retrieving services:', error);
+    res.status(500).json({ error: 'Error retrieving services' });
+  }
+};
 
 exports.createService = async (req, res) => {
   try {
-    
     if (!req.body) {
       return res.status(400).json({ error: 'Request body is missing' });
     }
@@ -94,7 +159,6 @@ exports.createService = async (req, res) => {
     res.status(500).json({ error: 'Error adding service' });
   }
 };
-
 
 exports.updateService = async (req, res) => {
   try {
@@ -187,11 +251,16 @@ exports.permanentDeleteService = async (req, res) => {
       return res.status(404).json({ error: 'Service not found' });
     }
 
-    const urlRegex = /https:\/\/res\.cloudinary\.com\/[^\s"]+/g;
+    const urlRegex = /https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/[^/]+\/services\/[^/]+/g;
     const imageUrls = service.content.match(urlRegex) || [];
     for (const url of imageUrls) {
-      const publicId = url.split('/').pop().split('.')[0];
-      await cloudinary.uploader.destroy(`services/${publicId}`);
+      const publicId = getPublicIdFromUrl(url);
+      try {
+        await cloudinary.uploader.destroy(publicId);
+       
+      } catch (error) {
+        console.error(`Error deleting Cloudinary resource ${publicId}:`, error.message);
+      }
     }
 
     await Service.findByIdAndDelete(id);
@@ -279,9 +348,27 @@ exports.getServicesByCategory = async (req, res) => {
         const imageUrls = service.content.match(urlRegex) || [];
         const imageDetails = await Promise.all(
           imageUrls.map(async (url) => {
-            const publicId = url.split('/').pop().split('.')[0];
+            // Extract public ID from URL
+            const urlParts = url.split('/');
+            const fileName = urlParts.pop().split('.')[0]; // e.g., 'tqotjlclvk5qsjugdqwe'
+            // Find the index of 'upload' and skip the version number (e.g., 'v1748271301')
+            const uploadIndex = urlParts.indexOf('upload') + 1; // After 'upload'
+            const versionOrFolder = urlParts[uploadIndex]; // Either version (e.g., 'v1748271301') or folder
+            const folderStartIndex = versionOrFolder.startsWith('v') && !isNaN(versionOrFolder.slice(1))
+              ? uploadIndex + 1 // Skip version
+              : uploadIndex; // No version, start with folder
+            const folderParts = urlParts.slice(folderStartIndex); // e.g., ['services']
+            const publicId = folderParts.join('/') + '/' + fileName; // e.g., 'services/tqotjlclvk5qsjugdqwe'
+
+            // Validate public ID format
+            if (!publicId || publicId.includes('..') || publicId.length > 255) {
+              console.warn(`Invalid public ID derived from URL: ${url}, publicId: ${publicId}`);
+              return { url, error: 'Invalid public ID' };
+            }
+
             try {
-              const result = await cloudinary.api.resource(`services/${publicId}`, {
+              // Fetch resource metadata
+              const result = await cloudinary.api.resource(publicId, {
                 resource_type: 'image',
               });
               return {
@@ -292,12 +379,20 @@ exports.getServicesByCategory = async (req, res) => {
                 height: result.height,
               };
             } catch (error) {
-              console.error(`Error fetching Cloudinary resource for ${publicId}:`, error);
+              console.error(`Error fetching Cloudinary resource for ${publicId}:`, {
+                url,
+                publicId,
+                error: error.message || error,
+                http_code: error.http_code || 'N/A',
+              });
               return { url, error: 'Failed to fetch image metadata' };
             }
           })
         );
-        return { ...service, images: imageDetails };
+
+        // Filter out images with errors to reduce frontend issues
+        const validImageDetails = imageDetails.filter((img) => !img.error);
+        return { ...service, images: validImageDetails.length > 0 ? validImageDetails : [] };
       })
     );
 
@@ -312,18 +407,28 @@ exports.getServicesByCategory = async (req, res) => {
 };
 
 
+
+
+
+
 exports.getServicesBySubcategory = async (req, res) => {
   try {
     const { subcategory } = req.params;
+    const { page = 1, limit = 10 } = req.query;
 
     if (typeof subcategory !== 'string' || subcategory.trim() === '') {
       return res.status(400).json({ error: 'Invalid subcategory' });
     }
 
-    const services = await Service.find({
-      subcategory: subcategory.trim(),
-      isDeleted: false,
-    })
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    if (isNaN(pageNum) || pageNum < 1 || isNaN(limitNum) || limitNum < 1) {
+      return res.status(400).json({ error: 'Invalid pagination parameters' });
+    }
+
+    const services = await Service.find({ subcategory: subcategory.trim(), isDeleted: false })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
       .select('_id title content category subcategory seoKeywords shortDescription')
       .lean();
 
@@ -331,6 +436,7 @@ exports.getServicesBySubcategory = async (req, res) => {
       return res.status(404).json({
         message: 'No services found for this subcategory',
         data: [],
+        pagination: { total: 0, page: pageNum, pages: 0, limit: limitNum },
       });
     }
 
@@ -363,15 +469,27 @@ exports.getServicesBySubcategory = async (req, res) => {
       })
     );
 
+    const total = await Service.countDocuments({
+      subcategory: subcategory.trim(),
+      isDeleted: false,
+    });
+
     res.status(200).json({
       message: 'Services retrieved successfully',
       data: processedServices,
+      pagination: {
+        total,
+        page: pageNum,
+        pages: Math.ceil(total / limitNum),
+        limit: limitNum,
+      },
     });
   } catch (error) {
     console.error('Error retrieving services by subcategory:', error);
     res.status(500).json({ error: 'Error retrieving services' });
   }
 };
+
 
 
 exports.searchServicesByKeywords = async (req, res) => {
