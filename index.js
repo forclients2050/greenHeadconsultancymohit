@@ -54,7 +54,8 @@ const forgetPass = require('./admin_routes/forgetPassRoute/forgetPassRoute');
 const categories = require('./admin_routes/categorySubRoute/categorySubRoute');
 const serviceManagement = require('./admin_routes/serviceManagementRoute/serviceManagementRoute');
 const blogControll = require('./admin_routes/blogRoute/blogRoute');
-const contactUs = require('./admin_routes/contactUsRoute/contactUsRoute')
+const contactUs = require('./admin_routes/contactUsRoute/contactUsRoute');
+const consultExpert = require('./admin_routes/consultExpert/consultExpertRoute')
 
 ////! All API End-Points
 
@@ -69,7 +70,7 @@ app.use('/', serviceManagement)
 app.use('/api/news', blogControll)
 
 app.use('/' , contactUs)
-
+app.use('/' , consultExpert)
 
 
 const PORT = process.env.PORT || 3000;
